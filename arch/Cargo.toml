@@ -17,7 +17,8 @@ acpi_tables = { path = "../acpi_tables", optional = true }
 arch_gen = { path = "../arch_gen" }
 
 [dependencies.linux-loader]
-git = "https://github.com/rust-vmm/linux-loader"
+git = "https://github.com/aghecenco/linux-loader.git"
+branch = "build_params"
 features = ["elf", "bzimage"]
 
 [dev-dependencies]

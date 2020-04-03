@@ -15,6 +15,8 @@ pub mod regs;
 
 use crate::InitramfsConfig;
 use crate::RegionType;
+use linux_loader::configurator::{BootConfigurator, BootParams};
+use linux_loader::configurator::linux::{LinuxBootConfigurator, LinuxBootParams};
 use linux_loader::loader::bootparam::{boot_params, setup_header};
 use linux_loader::loader::elf::start_info::{hvm_memmap_table_entry, hvm_start_info};
 use std::mem;
@@ -307,99 +309,45 @@ fn configure_64bit_boot(
     setup_hdr: Option<setup_header>,
     rsdp_addr: Option<GuestAddress>,
 ) -> super::Result<()> {
-    const KERNEL_BOOT_FLAG_MAGIC: u16 = 0xaa55;
-    const KERNEL_HDR_MAGIC: u32 = 0x53726448;
-    const KERNEL_LOADER_OTHER: u8 = 0xff;
-    const KERNEL_MIN_ALIGNMENT_BYTES: u32 = 0x1000000; // Must be non-zero.
-
-    let mut params: BootParamsWrapper = BootParamsWrapper(boot_params::default());
+    let mut lin_params = LinuxBootParams::new(
+        cmdline_addr,
+        cmdline_size,
+        layout::HIGH_RAM_START,
+        guest_mem.last_addr(),
+        layout::MEM_32BIT_RESERVED_START,
+        layout::RAM_64BIT_START,
+    )
+    .unwrap();
 
     if let Some(hdr) = setup_hdr {
-        // We should use the header if the loader provides one (e.g. from a bzImage).
-        params.0.hdr = hdr;
-    } else {
-        params.0.hdr.boot_flag = KERNEL_BOOT_FLAG_MAGIC;
-        params.0.hdr.header = KERNEL_HDR_MAGIC;
-        params.0.hdr.kernel_alignment = KERNEL_MIN_ALIGNMENT_BYTES;
-    };
-
-    // Common bootparams settings
-    if params.0.hdr.type_of_loader == 0 {
-        params.0.hdr.type_of_loader = KERNEL_LOADER_OTHER;
+        lin_params.hdr = hdr;
     }
-    params.0.hdr.cmd_line_ptr = cmdline_addr.raw_value() as u32;
-    params.0.hdr.cmdline_size = cmdline_size as u32;
 
+    // TODO implement add_initramfs
     if let Some(initramfs_config) = initramfs {
-        params.0.hdr.ramdisk_image = initramfs_config.address.raw_value() as u32;
-        params.0.hdr.ramdisk_size = initramfs_config.size as u32;
+        lin_params.hdr.ramdisk_image = initramfs_config.address.raw_value() as u32;
+        lin_params.hdr.ramdisk_size = initramfs_config.size as u32;
     }
 
-    add_e820_entry(&mut params.0, 0, layout::EBDA_START.raw_value(), E820_RAM)?;
+    lin_params.add_ebda(layout::EBDA_START).unwrap();
 
-    let mem_end = guest_mem.last_addr();
-    if mem_end < layout::MEM_32BIT_RESERVED_START {
-        add_e820_entry(
-            &mut params.0,
-            layout::HIGH_RAM_START.raw_value(),
-            mem_end.unchecked_offset_from(layout::HIGH_RAM_START) + 1,
-            E820_RAM,
-        )?;
-    } else {
-        add_e820_entry(
-            &mut params.0,
-            layout::HIGH_RAM_START.raw_value(),
-            layout::MEM_32BIT_RESERVED_START.unchecked_offset_from(layout::HIGH_RAM_START),
-            E820_RAM,
-        )?;
-        if mem_end > layout::RAM_64BIT_START {
-            add_e820_entry(
-                &mut params.0,
-                layout::RAM_64BIT_START.raw_value(),
-                mem_end.unchecked_offset_from(layout::RAM_64BIT_START) + 1,
-                E820_RAM,
-            )?;
-        }
-    }
-
-    add_e820_entry(
-        &mut params.0,
-        layout::PCI_MMCONFIG_START.0,
-        layout::PCI_MMCONFIG_SIZE,
-        E820_RESERVED,
-    )?;
+    lin_params
+        .add_pci(layout::PCI_MMCONFIG_START, layout::PCI_MMCONFIG_SIZE as usize)
+        .unwrap();
 
     if let Some(rsdp_addr) = rsdp_addr {
-        params.0.acpi_rsdp_addr = rsdp_addr.0;
+        lin_params.add_acpi(rsdp_addr);
     }
 
-    let zero_page_addr = layout::ZERO_PAGE_START;
-    guest_mem
-        .checked_offset(zero_page_addr, mem::size_of::<boot_params>())
-        .ok_or(super::Error::ZeroPagePastRamEnd)?;
-    guest_mem
-        .write_obj(params, zero_page_addr)
-        .map_err(super::Error::ZeroPageSetup)?;
-
-    Ok(())
-}
-
-/// Add an e820 region to the e820 map.
-/// Returns Ok(()) if successful, or an error if there is no space left in the map.
-fn add_e820_entry(
-    params: &mut boot_params,
-    addr: u64,
-    size: u64,
-    mem_type: u32,
-) -> Result<(), Error> {
-    if params.e820_entries >= params.e820_table.len() as u8 {
-        return Err(Error::E820Configuration);
-    }
-
-    params.e820_table[params.e820_entries as usize].addr = addr;
-    params.e820_table[params.e820_entries as usize].size = size;
-    params.e820_table[params.e820_entries as usize].type_ = mem_type;
-    params.e820_entries += 1;
+    LinuxBootConfigurator::write_bootparams::<boot_params, boot_params, boot_params, GuestMemoryMmap>(
+        BootParams::<boot_params, boot_params, boot_params>::new(
+            *lin_params,
+            layout::ZERO_PAGE_START,
+            None,
+            None,
+        ),
+        guest_mem,
+    ).unwrap();
 
     Ok(())
 }

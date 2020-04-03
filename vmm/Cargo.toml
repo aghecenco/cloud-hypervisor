@@ -43,5 +43,6 @@ signal-hook = "0.1.13"
 tempfile = "3.1.0"
 
 [dependencies.linux-loader]
-git = "https://github.com/rust-vmm/linux-loader"
+git = "https://github.com/aghecenco/linux-loader.git"
+branch = "build_params"
 features = ["elf", "bzimage"]
